@@ -63,9 +63,27 @@ jobs:
           #print axioms BoundaryRepro.argmin_cons
           end BoundaryRepro
           LEAN
+      - name: Export public validation environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$(lake env lean --print-prefix)"
+          tar --zstd -cf "$RUNNER_TEMP/lean-runtime.tar.zst" -C "$prefix" .
+          tar --zstd --exclude='./diagnostics' -cf "$RUNNER_TEMP/mathlib-workspace.tar.zst" .
+          ls -lh "$RUNNER_TEMP/lean-runtime.tar.zst" "$RUNNER_TEMP/mathlib-workspace.tar.zst"
+      - name: Retain validation environment
+        uses: actions/upload-artifact@v4
+        with:
+          name: to-dual-42852-runtime
+          path: |
+            ${{ runner.temp }}/lean-runtime.tar.zst
+            ${{ runner.temp }}/mathlib-workspace.tar.zst
+          retention-days: 1
+          compression-level: 0
       - name: Reproduce failure before patch
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           lake env lean OriginalArgmax42852.lean > diagnostics/baseline.log 2>&1
           status=$?
