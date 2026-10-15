@@ -1,0 +1,118 @@
+name: Diagnose to_dual 42852
+
+on:
+  push:
+    branches: [debug-to-dual-42852-20261015]
+    paths: [.github/workflows/debug-to-dual-42852.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      LEAN_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: 'false'
+          build: 'false'
+          test: 'false'
+          lint: 'false'
+          use-mathlib-cache: 'false'
+          use-github-cache: 'false'
+      - name: Fetch baseline dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          { git rev-parse HEAD; cat lean-toolchain; lake env lean --version; } | tee diagnostics/environment.txt
+          lake exe cache get Mathlib/Data/List/MinMax.lean MathlibTest/Attribute/ToDual.lean
+          lake build Mathlib.Data.List.MinMax MathlibTest.Attribute.ToDual 2>&1 | tee diagnostics/setup.log
+      - name: Write original proof reproducer
+        shell: bash
+        run: |
+          cat > OriginalArgmax42852.lean <<'LEAN'
+          import Mathlib.Data.List.MinMax
+          import Mathlib.Tactic.Translate.ToDual
+          set_option maxHeartbeats 2000000
+          namespace BoundaryRepro
+          open List
+          variable {α β : Type*} [LinearOrder β]
+          @[to_dual]
+          theorem argmax_cons (f : α → β) (a : α) (l : List α) :
+              argmax f (a :: l) =
+                Option.casesOn (argmax f l) (some a) fun c => if f a < f c then some c else some a :=
+            List.reverseRecOn l rfl fun hd tl ih => by
+              rw [← cons_append, argmax_concat, ih, argmax_concat]
+              rcases h : argmax f hd with - | m
+              · simp
+              dsimp
+              rw [← apply_ite, ← apply_ite]
+              grind -abstractProof
+          example (f : α → β) (a : α) (l : List α) :
+              argmin f (a :: l) =
+                Option.casesOn (argmin f l) (some a) fun c => if f c < f a then some c else some a :=
+            BoundaryRepro.argmin_cons f a l
+          #print axioms BoundaryRepro.argmin_cons
+          end BoundaryRepro
+          LEAN
+      - name: Reproduce failure before patch
+        shell: bash
+        run: |
+          set -uo pipefail
+          lake env lean OriginalArgmax42852.lean > diagnostics/baseline.log 2>&1
+          status=$?
+          cat diagnostics/baseline.log
+          echo "baseline_exit=$status" | tee diagnostics/baseline-status.txt
+          if [ "$status" -eq 0 ]; then
+            echo '::error::The unchanged translator accepted this reproducer.'
+            exit 1
+          fi
+          if ! grep -Eq 'to_dual.*failed|failed.*to_dual' diagnostics/baseline.log; then
+            echo '::error::Baseline did not reproduce a to_dual error.'
+            exit 1
+          fi
+      - name: Apply opaque-helper candidate and restore production proof
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Mathlib/Tactic/Translate/UnfoldBoundary.lean')
+          s = p.read_text()
+          old = 'withCanUnfoldPred (fun _ i => return !b.unfolds.contains i.name && !b.casts.contains i.name) do'
+          new = 'withCanUnfoldPred (fun _ i => return\n    !b.unfolds.contains i.name && !b.casts.contains i.name &&\n      !b.insertionFuns.contains i.name) do'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          p = Path('Mathlib/Data/List/MinMax.lean')
+          s = p.read_text()
+          old = 'split_ifs <;> grind -- Without `split_ifs`, `to_dual` gives an error.'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, 'grind -abstractProof'))
+          PY
+          git diff --check
+          git diff > diagnostics/candidate.patch
+      - name: Compile production proof with candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          lake build Mathlib.Data.List.MinMax 2>&1 | tee diagnostics/candidate-build.log
+      - name: Check original reproducer and existing regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          lake env lean OriginalArgmax42852.lean 2>&1 | tee diagnostics/candidate-reproducer.log
+          lake build MathlibTest.Attribute.ToDual 2>&1 | tee diagnostics/candidate-regressions.log
+      - name: Retain diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: to-dual-42852-diagnostics
+          path: diagnostics/
+          retention-days: 7
