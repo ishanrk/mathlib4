@@ -69,15 +69,40 @@ jobs:
           set -euo pipefail
           prefix="$(lake env lean --print-prefix)"
           tar --zstd -cf "$RUNNER_TEMP/lean-runtime.tar.zst" -C "$prefix" .
+          split -b 300M "$RUNNER_TEMP/lean-runtime.tar.zst" "$RUNNER_TEMP/lean-runtime.part-"
           tar --zstd --exclude='./diagnostics' -cf "$RUNNER_TEMP/mathlib-workspace.tar.zst" .
-          ls -lh "$RUNNER_TEMP/lean-runtime.tar.zst" "$RUNNER_TEMP/mathlib-workspace.tar.zst"
-      - name: Retain validation environment
-        uses: actions/upload-artifact@v4
+          ls -lh "$RUNNER_TEMP"/lean-runtime.part-* "$RUNNER_TEMP/mathlib-workspace.tar.zst"
+      - uses: actions/upload-artifact@v4
         with:
-          name: to-dual-42852-runtime
-          path: |
-            ${{ runner.temp }}/lean-runtime.tar.zst
-            ${{ runner.temp }}/mathlib-workspace.tar.zst
+          name: lean-runtime-aa
+          path: ${{ runner.temp }}/lean-runtime.part-aa
+          retention-days: 1
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lean-runtime-ab
+          path: ${{ runner.temp }}/lean-runtime.part-ab
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lean-runtime-ac
+          path: ${{ runner.temp }}/lean-runtime.part-ac
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lean-runtime-ad
+          path: ${{ runner.temp }}/lean-runtime.part-ad
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mathlib-workspace
+          path: ${{ runner.temp }}/mathlib-workspace.tar.zst
           retention-days: 1
           compression-level: 0
       - name: Reproduce failure before patch
@@ -105,7 +130,7 @@ jobs:
           p = Path('Mathlib/Tactic/Translate/UnfoldBoundary.lean')
           s = p.read_text()
           old = 'withCanUnfoldPred (fun _ i => return !b.unfolds.contains i.name && !b.casts.contains i.name) do'
-          new = 'withCanUnfoldPred (fun _ i => return\n    !b.unfolds.contains i.name && !b.casts.contains i.name &&\n      !b.insertionFuns.contains i.name) do'
+          new = 'withCanUnfoldPred (fun _ i =>\n    pure (!b.unfolds.contains i.name && !b.casts.contains i.name &&\n      !b.insertionFuns.contains i.name)) do'
           assert s.count(old) == 1
           p.write_text(s.replace(old, new))
           p = Path('Mathlib/Data/List/MinMax.lean')
