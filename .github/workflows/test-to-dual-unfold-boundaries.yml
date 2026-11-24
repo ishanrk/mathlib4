@@ -1,0 +1,105 @@
+name: Test to_dual unfold boundaries
+
+on:
+  push:
+    branches: [test-to-dual-unfold-boundaries]
+    paths: [.github/workflows/test-to-dual-unfold-boundaries.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LEAN_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: leanprover/lean-action@v1
+        with:
+          auto-config: 'false'
+          build: 'false'
+          test: 'false'
+          lint: 'false'
+          use-mathlib-cache: 'false'
+          use-github-cache: 'false'
+      - name: Prepare exact upstream revision and patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=e62b985f6c61653ebb17cb81d85565022fb1103d
+          patched=7e51d5dac0bf19e99e276edee75ad567548fe3b5
+          mkdir -p "$RUNNER_TEMP/to-dual-logs"
+          logs="$RUNNER_TEMP/to-dual-logs"
+          git diff --binary "$base" "$patched" -- Mathlib MathlibTest > "$logs/fix.patch"
+          git switch --detach "$base"
+          { git rev-parse HEAD; cat lean-toolchain; lake env lean --version; } | tee "$logs/environment.log"
+          lake exe cache get Mathlib/Data/List/MinMax.lean MathlibTest/Attribute/ToDual.lean MathlibTest/Attribute/ToAdditive/Basic.lean MathlibTest/Attribute/ToAdditive/IrredDef.lean 2>&1 | tee "$logs/cache.log"
+          lake build Mathlib.Data.List.MinMax MathlibTest.Attribute.ToDual 2>&1 | tee "$logs/baseline-build.log"
+      - name: Reproduce with only the workaround removed
+        shell: bash
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/to-dual-logs"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Mathlib/Data/List/MinMax.lean')
+          s = p.read_text()
+          old = '    split_ifs <;> grind -- Without `split_ifs`, `to_dual` gives an error.'
+          assert s.count(old) == 1
+          s = s.replace(old, '    grind')
+          p.write_text(s)
+          start = s.index('@[to_dual]\ntheorem argmax_cons ')
+          end = s.index('\nvariable [DecidableEq α]', start)
+          proof = s[start:end].removeprefix('@[to_dual]\n')
+          Path('ArgmaxSourceOnly.lean').write_text(
+              'import Mathlib.Data.List.MinMax\n'
+              'namespace Repro42852\nopen List\n'
+              'variable {α β : Type*} [LinearOrder β]\n'
+              + proof + '\nend Repro42852\n')
+          PY
+          git diff -- Mathlib/Data/List/MinMax.lean | tee "$logs/reproducer.diff"
+          set +e
+          lake env lean ArgmaxSourceOnly.lean 2>&1 | tee "$logs/source-only.log"
+          source_status=${PIPESTATUS[0]}
+          lake env lean Mathlib/Data/List/MinMax.lean 2>&1 | tee "$logs/baseline-error.log"
+          baseline_status=${PIPESTATUS[0]}
+          set -e
+          printf 'source_only_exit=%s\nbaseline_without_workaround_exit=%s\n' "$source_status" "$baseline_status" | tee "$logs/baseline-status.log"
+          git restore -- Mathlib/Data/List/MinMax.lean
+          rm ArgmaxSourceOnly.lean
+      - name: Compile with exact proposed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/to-dual-logs"
+          git apply --check "$logs/fix.patch"
+          git apply "$logs/fix.patch"
+          git diff --check
+          lake build Mathlib.Data.List.MinMax MathlibTest.Attribute.ToDual MathlibTest.Attribute.ToAdditive.Basic MathlibTest.Attribute.ToAdditive.IrredDef 2>&1 | tee "$logs/patched-build.log"
+          cat > VerifyArgmin.lean <<'LEAN'
+          import Mathlib.Data.List.MinMax
+          #check List.argmin_cons
+          #print axioms List.argmin_cons
+          LEAN
+          lake env lean VerifyArgmin.lean 2>&1 | tee "$logs/patched-argmin.log"
+      - name: Assert original failure was reproduced
+        shell: bash
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/to-dual-logs"
+          grep -Fx 'source_only_exit=0' "$logs/baseline-status.log"
+          grep -Eq '^baseline_without_workaround_exit=[1-9][0-9]*$' "$logs/baseline-status.log"
+          grep -Ei 'to_dual.*failed|failed.*to_dual' "$logs/baseline-error.log"
+      - name: Preserve actual compiler logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: to-dual-before-after
+          path: ${{ runner.temp }}/to-dual-logs
+          retention-days: 14
