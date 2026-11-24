@@ -39,7 +39,7 @@ jobs:
           git diff --binary "$base" "$patched" -- Mathlib MathlibTest > "$logs/fix.patch"
           git switch --detach "$base"
           { git rev-parse HEAD; cat lean-toolchain; lake env lean --version; } | tee "$logs/environment.log"
-          lake exe cache get Mathlib/Data/List/MinMax.lean MathlibTest/Attribute/ToDual.lean MathlibTest/Attribute/ToAdditive/Basic.lean MathlibTest/Attribute/ToAdditive/IrredDef.lean 2>&1 | tee "$logs/cache.log"
+          lake exe cache get Mathlib/Data/List/MinMax.lean MathlibTest/Attribute/ToDual.lean MathlibTest/Attribute/ToAdditive.lean 2>&1 | tee "$logs/cache.log"
           lake build Mathlib.Data.List.MinMax MathlibTest.Attribute.ToDual 2>&1 | tee "$logs/baseline-build.log"
       - name: Reproduce with only the workaround removed
         shell: bash
@@ -81,7 +81,7 @@ jobs:
           git apply --check "$logs/fix.patch"
           git apply "$logs/fix.patch"
           git diff --check
-          lake build Mathlib.Data.List.MinMax MathlibTest.Attribute.ToDual MathlibTest.Attribute.ToAdditive.Basic MathlibTest.Attribute.ToAdditive.IrredDef 2>&1 | tee "$logs/patched-build.log"
+          lake build Mathlib.Data.List.MinMax MathlibTest.Attribute.ToDual MathlibTest.Attribute.ToAdditive 2>&1 | tee "$logs/patched-build.log"
           cat > VerifyArgmin.lean <<'LEAN'
           import Mathlib.Data.List.MinMax
           #check List.argmin_cons
